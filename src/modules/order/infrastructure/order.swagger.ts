@@ -1,5 +1,8 @@
 import type { ApiPropertyOptions } from '@nestjs/swagger';
-import { ORDER_ITEM_MAX_QUANTITY, ORDER_STATUSES } from './order.constant';
+import {
+  ORDER_ITEM_MAX_QUANTITY,
+  ORDER_STATUSES,
+} from '@modules/order/domain/order.constant';
 
 const ORDER_ID_PARAM = {
   name: 'id',
@@ -23,14 +26,14 @@ export const ORDER_SWAGGER = {
     },
   },
 
-  FIND_ALL: {
+  GET_ALL: {
     operation: { summary: 'List orders', description: 'Newest first.' },
     responses: {
       200: { description: 'Every order.' },
     },
   },
 
-  FIND: {
+  GET: {
     operation: { summary: 'Get one order' },
     params: [ORDER_ID_PARAM],
     responses: {
@@ -53,7 +56,7 @@ export const ORDER_SWAGGER = {
     },
   },
 
-  REMOVE: {
+  DELETE: {
     operation: { summary: 'Delete an order' },
     params: [ORDER_ID_PARAM],
     responses: {

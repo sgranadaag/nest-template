@@ -1,107 +1,101 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
-import { OrderService } from '@modules/order/order.service';
-import { ORDER_STATUSES } from '@modules/order/order.constant';
-import type { IOrder, IOrderRepository } from '@modules/order/order.interface';
+import { OrderService } from '@modules/order/application/order.service';
+import type { IOrderRepository } from '@modules/order/application/orderRepository.port';
+import { Order } from '@modules/order/domain/order.entity';
+import { ORDER_STATUSES } from '@modules/order/domain/order.constant';
+import { OrderItem } from '@modules/order/domain/valueObjects/orderItem.valueObject';
 
 describe('OrderService', () => {
-  const pendingOrder: IOrder = {
-    id: 'order-1',
-    customerEmail: 'jane@example.com',
-    items: [{ sku: 'SKU-1', quantity: 2, unitPrice: 10 }],
-    total: 20,
-    status: ORDER_STATUSES.PENDING,
-    createdAt: new Date('2026-01-01T00:00:00.000Z'),
-  };
+  const buildPendingOrder = (): Order =>
+    Order.reconstitute(
+      'order-1',
+      'jane@example.com',
+      [OrderItem.create('SKU-1', 2, 10)],
+      ORDER_STATUSES.PENDING,
+      new Date('2026-01-01T00:00:00.000Z'),
+    );
 
-  let createMock: jest.Mock;
+  let saveMock: jest.Mock;
   let findAllMock: jest.Mock;
   let findMock: jest.Mock;
-  let updateMock: jest.Mock;
-  let removeMock: jest.Mock;
+  let deleteMock: jest.Mock;
   let service: OrderService;
 
   beforeEach(() => {
-    createMock = jest.fn((order: IOrder) => Promise.resolve(order));
+    saveMock = jest.fn((order: Order) => Promise.resolve(order));
     findAllMock = jest.fn();
     findMock = jest.fn().mockResolvedValue(null);
-    updateMock = jest.fn((order: IOrder) => Promise.resolve(order));
-    removeMock = jest.fn().mockResolvedValue(undefined);
+    deleteMock = jest.fn().mockResolvedValue(undefined);
 
     const orderRepository: IOrderRepository = {
-      create: createMock,
+      save: saveMock,
       findAll: findAllMock,
       find: findMock,
-      update: updateMock,
-      remove: removeMock,
+      delete: deleteMock,
     };
 
     service = new OrderService(orderRepository);
   });
 
   describe('create', () => {
-    it('persists a pending order with a generated id and its total', async () => {
-      const created = await service.create({
-        customerEmail: 'jane@example.com',
-        items: [
-          { sku: 'SKU-1', quantity: 3, unitPrice: 0.1 },
-          { sku: 'SKU-2', quantity: 1, unitPrice: 19.99 },
-        ],
-      });
+    it('persists a pending order built from the given items', async () => {
+      const created = await service.create('jane@example.com', [
+        { sku: 'SKU-1', quantity: 3, unitPrice: 0.1 },
+        { sku: 'SKU-2', quantity: 1, unitPrice: 19.99 },
+      ]);
 
-      expect(createMock).toHaveBeenCalledWith(created);
-      expect(created.id.length).toBeGreaterThan(0);
-      expect(created.status).toBe(ORDER_STATUSES.PENDING);
-      expect(created.total).toBe(20.29);
+      expect(saveMock).toHaveBeenCalledWith(created);
+      expect(created.getStatus()).toBe(ORDER_STATUSES.PENDING);
+      expect(created.getTotal()).toBe(20.29);
     });
   });
 
-  describe('findAll', () => {
+  describe('getAll', () => {
     it('returns every order from the repository', async () => {
-      findAllMock.mockResolvedValue([pendingOrder]);
+      const orders = [buildPendingOrder()];
+      findAllMock.mockResolvedValue(orders);
 
-      const result = await service.findAll();
+      const result = await service.getAll();
 
-      expect(result).toEqual([pendingOrder]);
+      expect(result).toBe(orders);
     });
   });
 
-  describe('find', () => {
+  describe('get', () => {
     it('returns the order from the repository', async () => {
-      findMock.mockResolvedValue(pendingOrder);
+      const order = buildPendingOrder();
+      findMock.mockResolvedValue(order);
 
-      const result = await service.find('order-1');
+      const result = await service.get('order-1');
 
-      expect(result).toBe(pendingOrder);
+      expect(result).toBe(order);
       expect(findMock).toHaveBeenCalledWith('order-1');
     });
 
     it('throws NotFoundException when the order does not exist', async () => {
-      await expect(service.find('missing')).rejects.toThrow(NotFoundException);
+      await expect(service.get('missing')).rejects.toThrow(NotFoundException);
     });
   });
 
   describe('cancel', () => {
-    it('moves a pending order to cancelled', async () => {
-      findMock.mockResolvedValue(pendingOrder);
+    it('cancels a pending order and persists it', async () => {
+      findMock.mockResolvedValue(buildPendingOrder());
 
       const result = await service.cancel('order-1');
 
-      expect(result.status).toBe(ORDER_STATUSES.CANCELLED);
-      expect(updateMock).toHaveBeenCalledWith(
-        expect.objectContaining({ status: ORDER_STATUSES.CANCELLED }),
-      );
+      expect(result.getStatus()).toBe(ORDER_STATUSES.CANCELLED);
+      expect(saveMock).toHaveBeenCalledWith(result);
     });
 
     it('throws ConflictException when the order is no longer pending', async () => {
-      findMock.mockResolvedValue({
-        ...pendingOrder,
-        status: ORDER_STATUSES.CANCELLED,
-      });
+      const order = buildPendingOrder();
+      order.cancel();
+      findMock.mockResolvedValue(order);
 
       await expect(service.cancel('order-1')).rejects.toThrow(
         ConflictException,
       );
-      expect(updateMock).not.toHaveBeenCalled();
+      expect(saveMock).not.toHaveBeenCalled();
     });
 
     it('throws NotFoundException when the order does not exist', async () => {
@@ -111,20 +105,20 @@ describe('OrderService', () => {
     });
   });
 
-  describe('remove', () => {
-    it('removes an existing order', async () => {
-      findMock.mockResolvedValue(pendingOrder);
+  describe('delete', () => {
+    it('deletes an existing order', async () => {
+      findMock.mockResolvedValue(buildPendingOrder());
 
-      await service.remove('order-1');
+      await service.delete('order-1');
 
-      expect(removeMock).toHaveBeenCalledWith('order-1');
+      expect(deleteMock).toHaveBeenCalledWith('order-1');
     });
 
     it('throws NotFoundException when the order does not exist', async () => {
-      await expect(service.remove('missing')).rejects.toThrow(
+      await expect(service.delete('missing')).rejects.toThrow(
         NotFoundException,
       );
-      expect(removeMock).not.toHaveBeenCalled();
+      expect(deleteMock).not.toHaveBeenCalled();
     });
   });
 });

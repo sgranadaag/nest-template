@@ -16,7 +16,7 @@ import path from 'node:path';
 // ---------------------------------------------------------------------------
 // Branch configuration — the only block that differs between branches.
 // ---------------------------------------------------------------------------
-const ARCHITECTURE = 'modular (main)';
+const ARCHITECTURE = 'hexagonal (stable/hexagonal)';
 
 const ROOT_FILES = ['src/main.ts', 'src/app.module.ts'];
 
@@ -26,19 +26,30 @@ const MIGRATION_NAME = /^\d{13}-[A-Z][A-Za-z0-9]*\.ts$/;
 const MODULE = '[a-z][a-zA-Z0-9]*';
 
 const MODULE_ROOT = `^src/modules/${MODULE}$`;
+const DOMAIN = `^src/modules/${MODULE}/domain`;
+const APPLICATION = `^src/modules/${MODULE}/application`;
+const INFRASTRUCTURE = `^src/modules/${MODULE}/infrastructure`;
+
+// Database engines the template supports; each one gets its own folder in
+// infrastructure/adapters/.
+const DATABASE_ENGINES = ['postgres', 'mongo'];
+const ADAPTERS = `${INFRASTRUCTURE}/adapters/(${DATABASE_ENGINES.join('|')})$`;
 
 // role -> the folder(s) a file with that role may live in (regex on the
 // path relative to the repo root, file name excluded).
 const ROLE_PLACEMENT = {
   module: [MODULE_ROOT],
-  controller: [MODULE_ROOT],
-  service: [MODULE_ROOT],
-  constant: ['^src/constants$', MODULE_ROOT],
-  swagger: [MODULE_ROOT],
-  dto: [MODULE_ROOT, `^src/modules/${MODULE}/dto$`],
-  interface: ['^src/interfaces$', MODULE_ROOT, `^src/modules/${MODULE}/interfaces$`],
-  entity: [MODULE_ROOT, `^src/modules/${MODULE}/entities$`],
-  repository: [MODULE_ROOT, `^src/modules/${MODULE}/repositories$`],
+  entity: [`${DOMAIN}$`, ADAPTERS],
+  valueObject: [`${DOMAIN}$`, `${DOMAIN}/valueObjects$`],
+  constant: ['^src/constants$', `${DOMAIN}$`],
+  interface: ['^src/interfaces$', `${DOMAIN}$`, `${DOMAIN}/interfaces$`],
+  service: [`${APPLICATION}$`],
+  port: [`${APPLICATION}$`, `${APPLICATION}/ports$`],
+  controller: [`${INFRASTRUCTURE}$`],
+  swagger: [`${INFRASTRUCTURE}$`],
+  dto: [`${INFRASTRUCTURE}$`, `${INFRASTRUCTURE}/dto$`],
+  adapter: [ADAPTERS],
+  mapper: [ADAPTERS],
   config: ['^src/config$'],
   datasource: ['^src/config$'],
   decorator: ['^src/decorators$'],
@@ -48,26 +59,33 @@ const ROLE_PLACEMENT = {
   test: ['^src/tests/.+$'],
 };
 
-// Inside a module, a file of these roles sits at the module root while it is
-// the only one of its kind, and moves into this folder from the second on.
+// The folders that may hold kind folders: domain/, application/ and
+// infrastructure/ are layers and always exist; inside them a file of these
+// roles sits at the layer root while it is the only one of its kind, and
+// moves into this folder from the second on.
+const KIND_FOLDER_PARENT = `^src/modules/${MODULE}/(domain|application|infrastructure)$`;
 const GROUPED_ROLE_FOLDERS = {
-  dto: 'dto',
+  valueObject: 'valueObjects',
   interface: 'interfaces',
-  entity: 'entities',
-  repository: 'repositories',
+  port: 'ports',
+  dto: 'dto',
 };
 
 const INTERFACE_NAME = /^I[A-Z][A-Za-z0-9]*$/;
 
-// Database engines the template supports, and the folders whose files must
-// carry an engine prefix and exist once per engine.
-const DATABASE_ENGINES = ['postgres', 'mongo'];
-const ENGINE_FOLDERS = [/\/entities$/, /\/repositories$/];
+// The folders whose files must carry their engine's prefix and exist once
+// per engine, in the sibling engine's folder.
+const ENGINE_FOLDERS = [new RegExp(ADAPTERS)];
 
-// Which sources need a unit test, and where that test lives.
+// Which sources need a unit test, and where that test lives: the domain and
+// the application layer — the business logic — plus every util.
 const UNIT_TESTED = [
   {
-    source: new RegExp(`^src/modules/(${MODULE})/(${MODULE}\\.service)\\.ts$`),
+    source: new RegExp(`^src/modules/(${MODULE})/application/(${MODULE}\\.service)\\.ts$`),
+    test: (match) => `src/tests/${match[1]}/${match[2]}.test.ts`,
+  },
+  {
+    source: new RegExp(`^src/modules/(${MODULE})/domain/(?:valueObjects/)?(${MODULE}\\.(?:entity|valueObject))\\.ts$`),
     test: (match) => `src/tests/${match[1]}/${match[2]}.test.ts`,
   },
   {
@@ -76,7 +94,7 @@ const UNIT_TESTED = [
   },
 ];
 
-const CONTROLLER = new RegExp(`^src/modules/(${MODULE})/${MODULE}\\.controller\\.ts$`);
+const CONTROLLER = new RegExp(`^src/modules/(${MODULE})/infrastructure/${MODULE}\\.controller\\.ts$`);
 
 // ---------------------------------------------------------------------------
 
@@ -266,16 +284,17 @@ function checkEngineParity() {
   for (const file of engineFiles) {
     const folder = path.posix.dirname(file);
     const fileName = path.posix.basename(file);
-    const engine = engines.find((candidate) => fileName.startsWith(candidate) && /^[A-Z]/.test(fileName.slice(candidate.length)));
+    const engine = path.posix.basename(folder);
 
-    if (!engine) {
-      fail(`${file}: persistence files are prefixed with their engine (${engines.join(' | ')}) — see .claude/rules/persistence.md.`);
+    if (!fileName.startsWith(engine) || !/^[A-Z]/.test(fileName.slice(engine.length))) {
+      fail(`${file}: persistence files are prefixed with their engine folder (${engine}) — see .claude/rules/persistence.md.`);
       continue;
     }
 
+    const adaptersFolder = path.posix.dirname(folder);
     const rest = fileName.slice(engine.length);
     for (const sibling of engines) {
-      const siblingFile = `${folder}/${sibling}${rest}`;
+      const siblingFile = `${adaptersFolder}/${sibling}/${sibling}${rest}`;
       if (!fs.existsSync(path.join(root, siblingFile))) {
         fail(`${file} has no ${sibling} counterpart (${siblingFile}) — every engine implements every persistence file, see .claude/rules/persistence.md.`);
       }
@@ -306,14 +325,14 @@ function checkTestPresence() {
 }
 
 // ---------------------------------------------------------------------------
-// 7. A folder inside a module wraps 2+ files; 2+ files of a kind get one.
+// 7. A kind folder wraps 2+ files; 2+ files of a kind get one.
 // ---------------------------------------------------------------------------
 function roleOf(file) {
   return path.posix.basename(file).match(FILE_NAME)?.[2];
 }
 
 function checkModuleFolders() {
-  const moduleRoot = new RegExp(MODULE_ROOT);
+  const kindFolderParent = new RegExp(KIND_FOLDER_PARENT);
   const filesByFolder = new Map();
   for (const file of sourceFiles) {
     const folder = path.posix.dirname(file);
@@ -323,11 +342,11 @@ function checkModuleFolders() {
   for (const [folder, files] of filesByFolder) {
     const parent = path.posix.dirname(folder);
 
-    if (moduleRoot.test(parent) && files.length === 1) {
+    if (kindFolderParent.test(parent) && files.length === 1) {
       fail(`${folder}/ holds a single file — a folder only wraps 2+ files, move ${path.posix.basename(files[0])} to ${parent}/ (see .claude/rules/folder-structure.md).`);
     }
 
-    if (moduleRoot.test(folder)) {
+    if (kindFolderParent.test(folder)) {
       for (const [role, groupFolder] of Object.entries(GROUPED_ROLE_FOLDERS)) {
         const ofRole = files.filter((file) => roleOf(file) === role);
         const grouped = filesByFolder.get(`${folder}/${groupFolder}`) ?? [];

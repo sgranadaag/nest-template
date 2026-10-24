@@ -16,11 +16,11 @@ that hold it in place.
 
 | Branch | Architecture | When to pick it |
 | --- | --- | --- |
-| **`main`** | **Modular** — classic Nest modules: controller → service → repository | Small and medium services; the fork point for a new architecture |
-| `stable/hexagonal` | Pragmatic hexagonal — `domain/`, `application/`, `infrastructure/` per module, outbound ports only | Rich domains whose rules should stay framework-free |
+| `main` | Modular — classic Nest modules: controller → service → repository | Small and medium services; the fork point for a new architecture |
+| **`stable/hexagonal`** | **Pragmatic hexagonal** — `domain/`, `application/`, `infrastructure/` per module, outbound ports only | Rich domains whose rules should stay framework-free |
 | `stable/layered` | Layered — `core/`, `common/`, `modules/`; flat modules with a repository class and Swagger schemas | Services with several cooperating modules and a documented API |
 
-**This is `main`.**
+**This is `stable/hexagonal`.**
 
 ## Stack
 
@@ -34,8 +34,8 @@ that hold it in place.
 - **API docs**: Swagger at `/docs`, one `@SwaggerDocs` decorator per
   endpoint fed by each module's `<module>.swagger.ts`
 - **Errors**: one global filter turns every failure into the same JSON body
-- **Testing**: Jest — unit tests for services and utils, e2e specs against
-  a real database
+- **Testing**: Jest — unit tests for the domain, the application services
+  and utils; e2e specs against a real database
 - **Quality gates**: ESLint (with the architecture's import rules) +
   Prettier, a standards script, Husky pre-commit / pre-push hooks
 - **Local infrastructure**: `docker-compose.yml` with Postgres 16 and
@@ -82,50 +82,64 @@ src/
     postgres/             SQL: tables
     mongo/                collection indexes
   modules/
-    health/               a module without persistence
-      health.module.ts / .controller.ts / .service.ts / .swagger.ts
-      healthResponse.dto.ts     a single DTO sits at the module root…
+    health/               no persistence: domain + application + infrastructure, no port
     order/
-      order.module.ts           wiring — the engine switch for entity + repository
-      order.controller.ts       HTTP in, DTO out
-      order.service.ts          business rules
-      order.interface.ts        IOrder, IOrderItem, IOrderRepository
-      order.constant.ts         ORDER_STATUSES, limits, ORDER_REPOSITORY token
-      order.swagger.ts          ORDER_SWAGGER, ORDER_PROPERTY_SWAGGER
-      dto/                      …and moves into a folder from the second one
-      entities/                 postgresOrder.entity.ts, mongoOrder.entity.ts
-      repositories/             postgresOrder.repository.ts, mongoOrder.repository.ts
-  tests/                  unit tests, mirroring modules/ and utils/
+      order.module.ts             the composition root — binds the port to an adapter
+      domain/
+        order.entity.ts           Order, the aggregate root
+        order.constant.ts         ORDER_STATUSES, limits
+        order.interface.ts        IOrderItemPrimitives
+        valueObjects/             OrderId, OrderItem
+      application/
+        order.service.ts          one service, every operation a method
+        orderRepository.port.ts   IOrderRepository + ORDER_REPOSITORY
+      infrastructure/
+        order.controller.ts       HTTP in, DTO out
+        order.swagger.ts          ORDER_SWAGGER, ORDER_PROPERTY_SWAGGER
+        dto/                      request and response DTOs
+        adapters/<engine>/        per engine: <engine>Order.adapter / .entity / .mapper
+  tests/                  unit tests: the domain, the services, the utils
 test/                     e2e specs, one per module with a controller
 ```
 
-The top level is split **by kind**: shared, module-agnostic code in its own
-folder, and everything that knows what the service does inside
-`modules/`. Inside a module the layout is the classic Nest one, with a
-single addition — a repository interface injected by token — because the
-service must not know which database it is running on. A folder only ever
-wraps two or more files.
+The top level is split **by kind**, exactly as on `main`. Inside a module,
+code is split into three layers, and **every dependency points inward**:
 
 ```
-HTTP ─► controller ─► service ─► IOrderRepository (ORDER_REPOSITORY)
-                                       ▲
-             PostgresOrderRepository ──┴── MongoOrderRepository
-                                       │
-                                  TypeORM ─► database
+              infrastructure                application              domain
+HTTP ─► OrderController ──────────► OrderService ─────────► Order, OrderItem, OrderId
+                                          │
+                                          ▼
+                                  IOrderRepository (port)
+                                          ▲  implements
+          PostgresOrderAdapter ───────────┴────────── MongoOrderAdapter
+           + entity + mapper                           + entity + mapper
+                 │                                            │
+                 └───────────────► TypeORM ◄──────────────────┘
 ```
 
-- **The controller** owns the HTTP side only: routes, params, status codes,
-  and mapping the service's result into a response DTO.
-- **The service** owns every business rule: building a new order, computing
-  its total, deciding that only a pending order can be cancelled, deciding
-  that a missing order is a 404.
-- **The repository** owns storage and nothing else. It returns `null` for
-  "not found" and never throws for it — what that means is the service's
-  call.
+- **The domain** is the centre: the `Order` aggregate and its value objects,
+  as plain classes with no framework. It enforces every invariant itself —
+  an item needs a SKU, a positive whole quantity and a non-negative price;
+  an order needs at least one item; only a pending order can be cancelled;
+  the total is derived, never stored as truth.
+- **The application layer** orchestrates: it builds or loads the aggregate,
+  calls its methods, persists it through a **port**, and turns "not found"
+  or "can't be cancelled" into Nest's HTTP exceptions.
+- **The infrastructure layer** is everything that touches the outside
+  world: the controller and its DTOs on the way in, and the **adapters** on
+  the way out — one per database engine, each with its TypeORM entity and a
+  mapper that converts rows to aggregates and back.
 
-ESLint enforces the direction: a controller cannot import a repository,
-neither a controller nor a service can import TypeORM or a driver, and
-shared folders cannot import a module.
+**Why "pragmatic"?** Only outbound ports exist. The controller calls the
+application service directly — no inbound port, no use-case class per
+operation — which removes ceremony without moving any business rule out of
+the domain. Swapping the database is still a one-line change in the
+composition root.
+
+ESLint enforces the arrows: the domain can't import Nest, `class-validator`,
+TypeORM or an outer layer; the application layer can't import
+infrastructure; a controller can't import a port or an adapter.
 
 ## Several database engines
 
@@ -140,12 +154,12 @@ import { postgresConfig } from '@config/postgres.config';
 useFactory: postgresConfig,
 // useFactory: mongoConfig,
 
-// order.module.ts — the entity and the repository
+// order.module.ts — the composition root
 TypeOrmModule.forFeature([PostgresOrderEntity]),
 // TypeOrmModule.forFeature([MongoOrderEntity]),
 …
-{ provide: ORDER_REPOSITORY, useClass: PostgresOrderRepository },
-// { provide: ORDER_REPOSITORY, useClass: MongoOrderRepository },
+{ provide: ORDER_REPOSITORY, useClass: PostgresOrderAdapter },
+// { provide: ORDER_REPOSITORY, useClass: MongoOrderAdapter },
 ```
 
 To switch to MongoDB, flip the comments in `app.module.ts` **and** in every
@@ -156,8 +170,9 @@ module that stores data — they must all name the same engine.
 | Entity | `PostgresOrderEntity` — `uuid` primary key, `jsonb` items | `MongoOrderEntity` — `_id` plus a unique `id` holding the same UUID |
 | Schema | SQL migrations (tables) | Migrations creating the collection's indexes |
 
-`npm run check:standards` fails while any entity or repository lacks its
-sibling for the other engine. The details are in
+Neither the domain nor the service changes — that is the point of the
+port. `npm run check:standards` fails while any adapter, entity or mapper
+lacks its sibling for the other engine. The details are in
 [.claude/rules/persistence.md](.claude/rules/persistence.md).
 
 ## The worked example
@@ -173,12 +188,14 @@ sibling for the other engine. The details are in
 
 ## Testing
 
-- **Unit** (`npm test`): every service and every util, in
-  `src/tests/`. A service is built by hand with a mocked repository — no
-  Nest container, no database.
+- **Unit** (`npm test`): the business logic, which here is exactly the
+  inner two layers — every aggregate, value object and application service
+  — plus every util, in `src/tests/`. Domain tests need no mocks at all; a
+  service is built by hand with its port mocked — no Nest container, no
+  database.
 - **e2e** (`npm run test:e2e`): every module with a controller, in
   `test/`, booting the real app against a real database. Run it on both
-  engines by flipping the switch (below) and running it again.
+  engines by flipping the switch (above) and running it again.
 
 ## Rules for contributors (and for Claude)
 
@@ -201,8 +218,8 @@ git remote rename origin core
 git remote add origin <your-repository>
 ```
 
-Then delete the database engine you won't use (its config, entities,
-repositories and commented switch lines), replace the `order` example
+Then delete the database engine you won't use (its config, adapters,
+entities, mappers, migrations and commented switch lines), replace the `order` example
 with your own modules, and pull rule or tooling updates from `core` as
 they land.
 

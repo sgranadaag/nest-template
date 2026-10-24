@@ -1,7 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { ORDER_STATUSES } from '@modules/order/order.constant';
-import type { IOrder } from '@modules/order/order.interface';
-import { ORDER_PROPERTY_SWAGGER } from '@modules/order/order.swagger';
+import { ORDER_STATUSES } from '@modules/order/domain/order.constant';
+import { Order } from '@modules/order/domain/order.entity';
+import { ORDER_PROPERTY_SWAGGER } from '@modules/order/infrastructure/order.swagger';
 import { OrderItemDto } from './orderItem.dto';
 
 export class OrderResponseDto {
@@ -23,16 +23,16 @@ export class OrderResponseDto {
   @ApiProperty(ORDER_PROPERTY_SWAGGER.CREATED_AT)
   readonly createdAt: string;
 
-  private constructor(order: IOrder) {
-    this.id = order.id;
-    this.customerEmail = order.customerEmail;
-    this.items = order.items;
-    this.total = order.total;
-    this.status = order.status;
-    this.createdAt = order.createdAt.toISOString();
+  private constructor(order: Order) {
+    this.id = order.getId().get();
+    this.customerEmail = order.getCustomerEmail();
+    this.items = order.getItems().map((item) => item.toPrimitives());
+    this.total = order.getTotal();
+    this.status = order.getStatus();
+    this.createdAt = order.getCreatedAt().toISOString();
   }
 
-  static fromOrder(order: IOrder): OrderResponseDto {
+  static fromDomain(order: Order): OrderResponseDto {
     return new OrderResponseDto(order);
   }
 }

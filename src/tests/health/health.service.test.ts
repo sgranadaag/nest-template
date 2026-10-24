@@ -1,12 +1,12 @@
-import { HealthService } from '@modules/health/health.service';
+import { HealthService } from '@modules/health/application/health.service';
 
 describe('HealthService', () => {
   describe('get', () => {
     it('reports the app as up', () => {
       const health = new HealthService().get();
 
-      expect(health.status).toBe('ok');
-      expect(health.uptime).toBeGreaterThanOrEqual(0);
+      expect(health.getStatus()).toBe('ok');
+      expect(health.getUptime()).toBeGreaterThanOrEqual(0);
     });
   });
 });

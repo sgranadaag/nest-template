@@ -1,9 +1,8 @@
-# Folder structure — modular (`main`)
+# Folder structure — hexagonal (`stable/hexagonal`)
 
-Top-level folders under `src/` are split **by kind**: a file belongs to
-exactly one of them based on *what it is*. Everything that knows what the
-service does lives in `modules/`; everything else is shared and knows no
-module.
+Top-level folders under `src/` are split **by kind**, exactly as on
+`main`. What changes is the inside of a module: three layer folders —
+see [[responsibility-layers]].
 
 ```
 src/
@@ -31,59 +30,66 @@ test/                             e2e specs: <module>.e2e-spec.ts + jest-e2e.jso
 
 ## A module
 
-A module is the classic Nest shape — `module`, `controller`, `service` —
-plus what it needs to run on either database engine (see [[persistence]])
-and to document itself in Swagger:
-
 ```
 modules/<module>/
-  <module>.module.ts           the Nest module: wiring + the engine switch
-  <module>.controller.ts       HTTP in, DTO out
-  <module>.service.ts          the module's business logic
-  <module>.interface.ts        I<Module>, its parts, and I<Module>Repository
-  <module>.constant.ts         enums, limits and the repository's DI token
-  <module>.swagger.ts          <MODULE>_SWAGGER and <MODULE>_PROPERTY_SWAGGER
-  <name>.dto.ts                while the module has a single DTO
-  dto/                         from the second DTO on
-  entities/                    one TypeORM entity per engine
-    postgres<Module>.entity.ts
-    mongo<Module>.entity.ts
-  repositories/                one repository per engine
-    postgres<Module>.repository.ts
-    mongo<Module>.repository.ts
+  <module>.module.ts                  the composition root: wiring + the engine switch
+  domain/
+    <module>.entity.ts                the aggregate root
+    <module>.constant.ts              its enums and limits
+    <module>.interface.ts             the primitive shapes it hands out
+    valueObjects/                     from the second value object on
+      <module>Id.valueObject.ts
+      <name>.valueObject.ts
+  application/
+    <module>.service.ts               one service per aggregate, every operation a method
+    <name>Repository.port.ts          a port: I<Name>Repository + its token
+    ports/                            from the second port on
+  infrastructure/
+    <module>.controller.ts            the inbound edge: HTTP in, DTO out
+    <module>.swagger.ts               <MODULE>_SWAGGER and <MODULE>_PROPERTY_SWAGGER
+    <name>.dto.ts                     while the module has a single DTO
+    dto/                              from the second DTO on
+    adapters/                         one folder per engine
+      postgres/
+        postgres<Module>.adapter.ts    implements the port
+        postgres<Module>.entity.ts     the TypeORM row
+        postgres<Module>.mapper.ts     toDomain / toPersistence
+      mongo/
+        mongo<Module>.adapter.ts
+        mongo<Module>.entity.ts
+        mongo<Module>.mapper.ts
 ```
 
-**A folder only wraps two or more files.** A file of a kind sits at the
-module root while it is the only one of that kind
-(`health/healthResponse.dto.ts`); when the second one arrives, **both** move
-into the kind's folder (`order/dto/`). The rule runs both ways — a folder
-left with one file is collapsed back. `entities/` and `repositories/`
-always hold one file per engine, so they are always folders. `npm run
-check:standards` enforces both directions.
-
-- **No `domain/`, `application/` or `infrastructure/` folders.** Layering
-  inside a module is the job of the `stable/hexagonal` branch, not this
-  one.
-- A module with no persistence (e.g. `health/`) has no repository,
-  entities or token.
+- **`domain/`, `application/` and `infrastructure/` always exist** in a
+  module that has them — they are the layers, not groupings.
+- **Inside a layer, a folder only wraps two or more files of one kind.** A
+  file sits at the layer root while it is the only one of its kind
+  (`application/orderRepository.port.ts`); when the second arrives,
+  **both** move into the kind's folder (`valueObjects/`, `ports/`, `dto/`,
+  `interfaces/`). The rule runs both ways. `adapters/` holds one folder
+  per engine (`postgres/`, `mongo/`), each with a full set, so they are
+  always folders. `npm run check:standards` enforces
+  both directions.
+- **The controller lives directly in `infrastructure/`** — not in
+  `adapters/`, which is reserved for classes implementing a port.
+- **Two `.entity.ts` files, never confused**: the aggregate root in
+  `domain/`, and the engine-prefixed TypeORM entities in
+  `infrastructure/adapters/<engine>/`. The folder and the prefix both tell them
+  apart.
+- A module with no persistence (e.g. `health/`) has `domain/`,
+  `application/` and `infrastructure/` but no port and no `adapters/`.
 
 ## Shared folders
 
 - **`config/`** holds *functions* that take a `ConfigService` (or the app)
-  and return or apply a library's options. A setting is decided here,
-  never inline in `app.module.ts` or `main.ts`. The two `*.datasource.ts`
-  files are the TypeORM CLI's entry points — the running app never imports
-  them.
-- **`constants/`** holds values every module may read: `ENV` (the name of
-  every environment variable). A value only one module reads goes in that
-  module's `<module>.constant.ts`.
+  and return or apply a library's options. The two `*.datasource.ts` files
+  are the TypeORM CLI's entry points — the running app never imports them.
+- **`constants/`** holds values every module may read: `ENV`. A value one
+  module owns goes in its `domain/<module>.constant.ts`.
 - **`decorators/`** holds composed decorators, one `<name>.decorator.ts`
-  per subject. Today: `SwaggerDocs`, the one Swagger decorator every
-  handler carries.
-- **`interfaces/`** holds the interfaces that more than one layer agrees
-  on — the Swagger schema shape a decorator and every `<module>.swagger.ts`
-  share, the exception body a util reads. An interface only one module uses
-  lives in that module's `<module>.interface.ts`.
+  per subject — today `SwaggerDocs`.
+- **`interfaces/`** holds the interfaces more than one layer agrees on —
+  the Swagger schema shape, the exception body a util reads.
 - **`middlewares/`** holds middleware and global exception filters, kept
   thin: what they compute is delegated to a util.
 - **`utils/`** holds pure functions, **one file per kind** — not per
@@ -98,9 +104,9 @@ check:standards` enforces both directions.
   | `string.util.ts` | text: slugs, casing, trimming | — |
   | `auth.util.ts` | credentials and tokens | — |
 
-  A new helper joins the file of its kind. A new file means a genuinely
-  new kind, not a new subject — that is what keeps `utils/` from turning
-  into one file per function.
+  A new helper joins the file of its kind. The domain may call a util — it
+  is plain, deterministic code with no I/O — which is why id generation
+  needs no port.
 
 ## Path aliases
 
@@ -108,13 +114,12 @@ One alias per top-level folder of `src/`: `@modules/*`, `@middlewares/*`,
 `@utils/*`, `@decorators/*`, `@interfaces/*`, `@tests/*`, `@config/*`,
 `@constants/*`.
 
-- Any import crossing a `../` boundary goes through an alias. A `./`
-  import of a sibling or of a subfolder of the same module is fine.
-- The `config/*.datasource.ts` files are the one exception: the TypeORM CLI
-  runs them with plain `ts-node`, outside the bundler and the alias
-  resolver, so they import relatively.
+- Any import crossing a `../` boundary goes through an alias — including
+  between layers of the same module (`@modules/order/domain/order.entity`
+  from `application/`). A `./` import inside one folder is fine.
+- The `config/*.datasource.ts` files import relatively: the TypeORM CLI
+  runs them outside the bundler and the alias resolver.
 - Adding an alias touches **three** places in lockstep: `tsconfig.json`
   `paths`, `package.json` `jest.moduleNameMapper` and
   `test/jest-e2e.json` `moduleNameMapper`. `npm run check:standards` fails
-  when they drift or when an alias points at a folder that no longer
-  exists.
+  when they drift.

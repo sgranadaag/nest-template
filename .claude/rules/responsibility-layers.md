@@ -1,89 +1,105 @@
-# Responsibility layers — modular (`main`)
+# Responsibility layers — hexagonal (`stable/hexagonal`)
 
-Every layer has one owner and one direction. This file names no feature;
-if a new flow does not fit, the flow is wrong before the rule is.
+Pragmatic hexagonal architecture (ports & adapters), the same shape as
+`nest-hexagonal`'s `stable/main`. Every module is split into three layers,
+and **every dependency points inward**: `infrastructure → application →
+domain`. This file names no feature; if a new flow does not fit, the flow
+is wrong before the rule is.
 
 ```
-HTTP ──► controller ──► service ──► I<Module>Repository (interface, injected by token)
-           │              │                 ▲
-           ▼              ▼                 │ implements, one per engine
-          dto          <module>.interface  repositories/<engine><Module>.repository
-                                            │
-                                            ▼
-                                     entities/<engine><Module>.entity ──► database
+             ┌──────────────────────── infrastructure ───────────────────────┐
+HTTP ──► controller ──► application service ──► port (interface + token)    │
+             │  dto         │                       ▲                         │
+             │              ▼                       │ implements              │
+             │           domain                adapters/<engine>/<engine><Module>.adapter
+             │    (aggregate, value objects)        │  + .entity + .mapper     │
+             └──────────────────────────────────────┴──────────► database ───┘
 ```
+
+**Pragmatic** means two deliberate simplifications of the pure version:
+
+- **Only outbound (driven) ports exist.** The controller calls the
+  application service class directly — there is no inbound port, no
+  use-case interface, no command bus in between.
+- **One application service per aggregate**, holding every operation as a
+  method (`create`, `get`, `getAll`, `cancel`, `delete`) — not one class
+  per use case.
 
 ## Layer table
 
 | Layer | Owns | Must NOT do |
 | --- | --- | --- |
-| `<module>.module.ts` | Wiring: imports, controllers, providers — and the engine switch: the active engine's entity and repository live, the other commented out | Hold logic of any kind |
-| `<module>.controller.ts` | Routes, params (`ParseUUIDPipe`), status codes, one `@SwaggerDocs` per handler; handing the request DTO to its service and mapping the result with `<Name>ResponseDto.from…()` | Contain business rules; import a repository or TypeORM |
-| `<module>.service.ts` | Every business rule of the module: building new records, invariants, state transitions, "not found"/"conflict" decisions | Know HTTP beyond Nest's built-in exceptions; import TypeORM, an entity or a concrete repository |
-| `<module>.interface.ts` | The plain shapes the module works in, and `I<Module>Repository` — the persistence contract | Import a framework or a driver; name an engine |
-| `repositories/<engine><Module>.repository.ts` | Talking to one engine through TypeORM, and converting between its entity and the module's interface | Decide anything: no throwing for "not found" (return `null`), no validation, no business rule |
-| `entities/<engine><Module>.entity.ts` | The row/document shape for one engine | Be returned from a repository, or imported outside `repositories/` and the module file |
-| DTOs | Request validation (`class-validator`), the response shape, and `@ApiProperty` from `<MODULE>_PROPERTY_SWAGGER` | Contain logic beyond `from…()` mapping |
-| `<module>.swagger.ts` | The module's OpenAPI text: endpoint schemas and property options, as data | Import a DTO (the DTOs import it — see the decorator's JSDoc) |
-| `decorators/` | Composing framework decorators into one | Know a module |
-| `interfaces/` | Shapes more than one layer agrees on | Hold anything but types |
-| `middlewares/` | Plugging into the request pipeline — thin, delegating what they compute to `utils/` | Hold the computation itself |
-| `utils/` | Pure functions, one file per kind | Hold state; import Nest modules, a module or I/O |
-| `config/`, `constants/` | Options factories, environment keys | Import from `modules/` |
+| `domain/` | The aggregate root (`<module>.entity.ts`), its value objects, its enums and the primitive shapes it hands out. Every invariant: what a valid item is, which state changes are allowed, how a total is computed | Import Nest, TypeORM, a driver, `class-validator`, or anything from `application/` or `infrastructure/`. Be decorated or injected |
+| `application/` | The application service: orchestrating the aggregate and its ports; deciding "not found" / "conflict" and throwing Nest's HTTP exceptions; the ports (`<name>.port.ts`: interface + `Symbol` token) it needs from the outside | Import `infrastructure/`, TypeORM or a driver; know a DTO, a status code beyond the exception class, or which database runs |
+| `infrastructure/` controller | Routes, params (`ParseUUIDPipe`), status codes, one `@SwaggerDocs` per handler; turning the request DTO into primitives for the service and the aggregate into a response DTO (`fromDomain`) | Contain a business rule; import a port, an adapter or the driver |
+| `infrastructure/` DTOs + `<module>.swagger.ts` | Request validation, the response shape, the OpenAPI text | Be passed into `application/` or `domain/` |
+| `infrastructure/adapters/<engine>/` | One adapter per engine implementing the port, with its TypeORM entity and its mapper (`toDomain` / `toPersistence`) | Decide anything: no "not found" exception (return `null`), no validation, no business rule. Return an ORM entity |
+| `<module>.module.ts` | The composition root: binds the port's token to the active engine's adapter (the engine switch) | Hold logic |
+| `decorators/`, `interfaces/`, `middlewares/`, `utils/`, `config/`, `constants/` | Shared, module-agnostic code — see [[folder-structure]] | Import from `modules/` |
 
 ## The direction of dependency
 
-- **controller → service → repository interface.** Never the reverse,
-  never skipping a step.
-- **Only `repositories/` and `entities/` import TypeORM** (plus `config/`,
-  `migrations/` and the module file that registers the entity). ESLint
-  blocks `typeorm`, `@nestjs/typeorm`, `pg` and `mongodb` in controllers and
-  services, and blocks a controller from importing any repository.
-- **Shared folders never import a module.** ESLint blocks `@modules/*` from
-  `config/`, `constants/`, `decorators/`, `interfaces/`, `middlewares/`
-  and `utils/`.
-- **Modules don't reach into each other's internals.** When one module
-  needs another's data, the owning module `exports` its repository token
-  (or its service) and the consumer imports that module.
+ESLint enforces every arrow as an error:
+
+- **`domain/`** may import only other `domain/` files, `@utils/*` and
+  `@constants/*`. No `@nestjs/*`, no `class-validator`, no TypeORM or
+  driver, nothing from `application/` or `infrastructure/`.
+- **`application/`** may import `domain/` and its own ports. No
+  `infrastructure/`, no TypeORM or driver.
+- **The controller** may import its application service and DTOs. No port,
+  no adapter, no TypeORM or driver.
+- **Shared folders never import a module.**
+
+An adapter depends **outward** on the port to implement it; the service
+depends **inward** on the port to use it. Neither knows the other.
+
+## Domain objects
+
+- **The aggregate root** has a private constructor and two factories:
+  `create(...)` for a new instance (mints the id, sets the initial state,
+  enforces creation invariants) and `reconstitute(...)` to rehydrate from
+  storage without minting anything.
+- **State changes are methods** that enforce their own invariant
+  (`cancel()` refuses anything but a pending order). The aggregate also
+  exposes the question (`canBeCancelled()`), so the service can answer
+  with the right HTTP exception before calling it — the domain throws a
+  plain `Error` only as a last line of defence.
+- **Value objects are immutable**: no setters, a static `create()` that
+  validates (with a public static `isValid()` holding the rule), `from()`
+  to wrap an existing value, getters, and `toPrimitives()` when another
+  layer needs the plain shape.
+- **Getters return copies** of collections, so nothing outside the
+  aggregate can change it.
+- Ids are value objects (`OrderId`) wrapping a UUID v4 from
+  `generateId` in `utils/crypto.util.ts`, the same on every engine.
 
 ## Errors
 
-Services signal failure by throwing Nest's built-in exceptions
-(`NotFoundException`, `ConflictException`, …). The global
-`HttpExceptionFilter` turns every error, HTTP or not, into one body —
-`{ statusCode, error, message, path, timestamp }` — reading status, name
-and message through `utils/http.util.ts`. Repositories never throw for an
-absent record — they return `null` and the service decides what that
-means.
-
-## Validation
-
-Request DTOs carry `class-validator` decorators, enforced by the global
-`ValidationPipe({ whitelist: true, transform: true })` in `main.ts`; nested
-objects use `@ValidateNested` + `@Type`. Id params use `ParseUUIDPipe`.
-Ids are UUID v4 strings, generated by `generateId` in
-`utils/crypto.util.ts`, the same on every engine.
+Application services throw Nest's built-in HTTP exceptions directly — no
+parallel domain-exception hierarchy. The global `HttpExceptionFilter`
+turns every error into `{ statusCode, error, message, path, timestamp }`,
+reading them through `utils/http.util.ts`. An adapter never throws for an
+absent record; it returns `null`.
 
 ## Swagger
 
 Every handler carries exactly one `@SwaggerDocs(<MODULE>_SWAGGER.<ENDPOINT>,
-ResponseDto?)`, and every controller one `@ApiTags(<MODULE>_SWAGGER.API_TAG)`
-— never a stack of `@ApiOperation` / `@ApiResponse` directly. Responses are
-keyed by status code in the schema. DTO fields take
-`@ApiProperty(<MODULE>_PROPERTY_SWAGGER.<FIELD>)`; a field whose type is
-another DTO adds `type` beside the spread (`{ ...ITEMS, type: [OrderItemDto] }`),
-since the swagger file can't import DTOs. The document is served at
-`/docs` (`config/swagger.config.ts`).
+ResponseDto?)`, every controller one `@ApiTags(<MODULE>_SWAGGER.API_TAG)`.
+DTO fields take `@ApiProperty(<MODULE>_PROPERTY_SWAGGER.<FIELD>)`. Swagger
+lives entirely in `infrastructure/` — the domain never knows it is
+documented. The document is served at `/docs`.
 
 ## When adding a module
 
-Build it in the order the data flows, and stop at the layer that is
-needed — a module with no storage has no repository:
+Build it from the inside out:
 
-1. `<module>.interface.ts` and `<module>.constant.ts` (with the
-   repository token).
-2. One entity and one repository per engine, and a migration per engine —
-   see [[persistence]].
-3. The service, with its unit test — see [[testing]].
-4. `<module>.swagger.ts`, the DTOs, the controller, and its e2e spec.
-5. The module file, then register it in `app.module.ts`.
+1. `domain/`: the aggregate, its value objects and constants, with their
+   unit tests.
+2. `application/`: the port (interface + token) and the service, with its
+   unit test against a mocked port.
+3. `infrastructure/adapters/<engine>/`: per engine, the entity, the mapper and the
+   adapter — plus a migration per engine. See [[persistence]].
+4. `infrastructure/`: `<module>.swagger.ts`, DTOs, the controller, and its
+   e2e spec.
+5. The module file — the composition root — then register it in
+   `app.module.ts`.

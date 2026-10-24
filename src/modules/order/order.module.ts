@@ -1,12 +1,12 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { OrderController } from './order.controller';
-import { OrderService } from './order.service';
-import { ORDER_REPOSITORY } from './order.constant';
-import { PostgresOrderEntity } from './entities/postgresOrder.entity';
-import { PostgresOrderRepository } from './repositories/postgresOrder.repository';
-// import { MongoOrderEntity } from './entities/mongoOrder.entity';
-// import { MongoOrderRepository } from './repositories/mongoOrder.repository';
+import { OrderController } from './infrastructure/order.controller';
+import { OrderService } from './application/order.service';
+import { ORDER_REPOSITORY } from './application/orderRepository.port';
+import { PostgresOrderEntity } from './infrastructure/adapters/postgres/postgresOrder.entity';
+import { PostgresOrderAdapter } from './infrastructure/adapters/postgres/postgresOrder.adapter';
+// import { MongoOrderEntity } from './infrastructure/adapters/mongoOrder.entity';
+// import { MongoOrderAdapter } from './infrastructure/adapters/mongoOrder.adapter';
 
 @Module({
   imports: [
@@ -16,8 +16,8 @@ import { PostgresOrderRepository } from './repositories/postgresOrder.repository
   controllers: [OrderController],
   providers: [
     OrderService,
-    { provide: ORDER_REPOSITORY, useClass: PostgresOrderRepository },
-    // { provide: ORDER_REPOSITORY, useClass: MongoOrderRepository },
+    { provide: ORDER_REPOSITORY, useClass: PostgresOrderAdapter },
+    // { provide: ORDER_REPOSITORY, useClass: MongoOrderAdapter },
   ],
 })
 export class OrderModule {}

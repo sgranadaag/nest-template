@@ -10,18 +10,35 @@ const RELATIVE_PARENT_IMPORT = {
     'Use a @alias import instead of a relative parent import — see .claude/rules/folder-structure.md.',
 };
 
-const PERSISTENCE_IMPORTS = [
-  {
-    group: ['typeorm', '@nestjs/typeorm', 'pg', 'mongodb'],
-    message:
-      'Only a module’s repositories/ and entities/ (and config/, migrations/) talk to the database driver — see .claude/rules/responsibility-layers.md.',
-  },
-  {
-    group: ['**/repositories/*', '**/entities/*'],
-    message:
-      'Depend on the module’s I<Module>Repository interface (injected by its token), never on a concrete engine implementation — see .claude/rules/persistence.md.',
-  },
-];
+const DRIVER_IMPORTS = {
+  group: ['typeorm', '@nestjs/typeorm', 'pg', 'mongodb'],
+  message:
+    'Only infrastructure/adapters/ (and config/, migrations/, the module file) talk to the database driver — see .claude/rules/responsibility-layers.md.',
+};
+
+const FRAMEWORK_IMPORTS = {
+  group: ['@nestjs/*', 'class-validator', 'class-transformer'],
+  message:
+    'domain/ is framework-free: plain classes, no Nest, no validation decorators — see .claude/rules/responsibility-layers.md.',
+};
+
+const OUTER_LAYERS_FROM_DOMAIN = {
+  group: ['@modules/*/application/**', '@modules/*/infrastructure/**', '**/application/*', '**/infrastructure/*'],
+  message:
+    'Dependencies point inward: domain/ never imports application/ or infrastructure/ — see .claude/rules/responsibility-layers.md.',
+};
+
+const INFRASTRUCTURE_FROM_APPLICATION = {
+  group: ['@modules/*/infrastructure/**', '**/infrastructure/*'],
+  message:
+    'Dependencies point inward: application/ depends on its ports, never on infrastructure/ — see .claude/rules/responsibility-layers.md.',
+};
+
+const ADAPTERS_FROM_CONTROLLER = {
+  group: ['**/adapters/*', '**/*.port'],
+  message:
+    'A controller calls its application service, never a port or an adapter — see .claude/rules/responsibility-layers.md.',
+};
 
 export default tseslint.config(
   {
@@ -91,32 +108,52 @@ export default tseslint.config(
     },
   },
   {
-    // .claude/rules/responsibility-layers.md: controllers and services
-    // never touch the database driver or a concrete repository.
-    files: ['src/modules/**/*.controller.ts', 'src/modules/**/*.service.ts'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        { patterns: [RELATIVE_PARENT_IMPORT, ...PERSISTENCE_IMPORTS] },
-      ],
-    },
-  },
-  {
-    // .claude/rules/responsibility-layers.md: a controller speaks to its
-    // service only, never to a repository, abstract or not.
-    files: ['src/modules/**/*.controller.ts'],
+    // .claude/rules/responsibility-layers.md: the domain is the centre —
+    // no framework, no driver, no outer layer.
+    files: ['src/modules/*/domain/**/*.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
         {
           patterns: [
             RELATIVE_PARENT_IMPORT,
-            ...PERSISTENCE_IMPORTS,
-            {
-              group: ['**/repositories/*', '**/*.repository'],
-              message:
-                'A controller calls its service, never a repository — see .claude/rules/responsibility-layers.md.',
-            },
+            DRIVER_IMPORTS,
+            FRAMEWORK_IMPORTS,
+            OUTER_LAYERS_FROM_DOMAIN,
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // .claude/rules/responsibility-layers.md: application/ talks to the
+    // outside world through its ports only.
+    files: ['src/modules/*/application/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            RELATIVE_PARENT_IMPORT,
+            DRIVER_IMPORTS,
+            INFRASTRUCTURE_FROM_APPLICATION,
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // .claude/rules/responsibility-layers.md: a controller is the inbound
+    // edge — it calls its service, never a port, an adapter or the driver.
+    files: ['src/modules/*/infrastructure/*.controller.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            RELATIVE_PARENT_IMPORT,
+            DRIVER_IMPORTS,
+            ADAPTERS_FROM_CONTROLLER,
           ],
         },
       ],

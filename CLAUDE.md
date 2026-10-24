@@ -15,7 +15,7 @@ disagree, the rules win and the README is what needs fixing.
 
 Read them before making structural changes:
 
-- [.claude/rules/responsibility-layers.md](.claude/rules/responsibility-layers.md) — **start here**: what each layer owns and the direction of dependency
+- [.claude/rules/responsibility-layers.md](.claude/rules/responsibility-layers.md) — **start here**: domain / application / infrastructure, and why every dependency points inward
 - [.claude/rules/folder-structure.md](.claude/rules/folder-structure.md)
 - [.claude/rules/naming-conventions.md](.claude/rules/naming-conventions.md)
 - [.claude/rules/persistence.md](.claude/rules/persistence.md) — Postgres and MongoDB, one active at a time
@@ -29,16 +29,29 @@ state manager:
 
 | Branch | Architecture | Reference |
 | --- | --- | --- |
-| **`main`** (this branch) | **Modular** — classic Nest modules (controller → service → repository), shared folders split by kind | the fork point |
-| `stable/hexagonal` | Pragmatic hexagonal — `domain/` / `application/` / `infrastructure/` per module, outbound ports only | `nest-hexagonal` `stable/main` |
+| `main` | Modular — classic Nest modules (controller → service → repository), shared folders split by kind | the fork point |
+| **`stable/hexagonal`** (this branch) | **Pragmatic hexagonal** — `domain/` / `application/` / `infrastructure/` per module, outbound ports only | `nest-hexagonal` `stable/main` |
 | `stable/layered` | Layered — `core/` / `common/` / `modules/`, flat modules, Swagger schemas | `oauth/auth-server` |
 
 What every branch shares on purpose: the tooling (Nest 12, rspack, Jest,
 ESLint + Prettier, Husky), the two database engines and how one is chosen,
 the `order` and `health` examples and their HTTP surface, and the e2e
-specs. What differs is `src/`, the rules, `eslint.config.mjs`'s
-architecture block and `scripts/check-standards.mjs`'s configuration block.
-A change to the shared part is made on every branch.
+specs. What differs is `src/modules/`, the rules, `eslint.config.mjs`'s
+architecture blocks and `scripts/check-standards.mjs`'s configuration
+block (plus the folder check, which here looks inside the layers). A
+change to the shared part is made on every branch.
+
+## This branch in one paragraph
+
+Each module is an aggregate with three layers. `domain/` holds the
+aggregate root and its value objects — plain classes, no framework, every
+invariant. `application/` holds one service per aggregate and the
+**outbound ports** (interface + `Symbol` token) it needs; it throws Nest's
+HTTP exceptions. `infrastructure/` holds the controller, DTOs, Swagger
+schema, and `adapters/<engine>/` — one adapter + TypeORM entity + mapper
+per engine. The module file is the composition root that binds each port to
+an adapter. There are no inbound ports: the controller calls the service
+class directly. That is the "pragmatic" part, and it is deliberate.
 
 ## Project declarations
 
@@ -89,16 +102,20 @@ doesn't replace `/standards-review`'s judgement:
   `npm run check:standards`. Any failure aborts the commit.
 - **`.husky/pre-push`**: `npm test`.
 - ESLint (`eslint.config.mjs`) enforces as errors: no relative-parent
-  imports, no TypeORM/driver import in controllers and services, no
-  repository import in controllers, no module import from shared folders,
-  no `any`, no floating promises, no `console`.
+  imports; `domain/` importing Nest, `class-validator`, TypeORM, a driver,
+  `application/` or `infrastructure/`; `application/` importing
+  `infrastructure/` or TypeORM; a controller importing a port, an adapter
+  or TypeORM; a shared folder importing a module; `any`, floating
+  promises, `console`.
 - `scripts/check-standards.mjs` checks what ESLint can't: aliases in sync
   across `tsconfig.json` and both Jest configs, every dependency used,
   every file named `<camelCase>.<role>.ts` and placed in its role's
-  folder, no module folder wrapping a single file (and no two files of a
-  kind left outside their folder), every engine-specific file paired with
-  a sibling per engine, every service/util with its unit test, every
-  controller with its e2e spec, and every interface named `I<Name>`.
+  layer and folder, no kind folder (`valueObjects/`, `ports/`, `dto/`,
+  `interfaces/`) wrapping a single file and no two files of a kind left
+  outside one, every adapter/entity/mapper paired with a sibling per
+  engine, every aggregate, value object, service and util with its unit
+  test, every controller with its e2e spec, and every interface named
+  `I<Name>`.
 - Not automated: whether a rule lives in the right layer, whether the two
   engines behave the same, whether a test asserts behaviour.
 
@@ -108,11 +125,11 @@ doesn't replace `/standards-review`'s judgement:
 
 | Endpoint | What it demonstrates |
 | --- | --- |
-| `POST /orders` | Nested DTO validation; the service building a record (id, total, initial status) |
-| `GET /orders`, `GET /orders/:id` | Reads through the repository interface; `ParseUUIDPipe`; 404 decided by the service |
-| `PATCH /orders/:id/cancel` | A state transition with an invariant (only `pending` → `cancelled`, else 409) |
+| `POST /orders` | DTO → primitives in the controller; `Order.create` with validated `OrderItem` value objects; the total derived by the aggregate |
+| `GET /orders`, `GET /orders/:id` | Reads through the `IOrderRepository` port; mappers rebuilding the aggregate with `reconstitute`; 404 decided by the service |
+| `PATCH /orders/:id/cancel` | An aggregate method guarding its invariant (`canBeCancelled` / `cancel`), the service answering 409, the port's `save` as an upsert |
 | `DELETE /orders/:id` | 204 on success, 404 when absent |
-| `GET /health` | A module with no persistence |
+| `GET /health` | A module with no persistence: domain + application + infrastructure, no port |
 
 Removing it means deleting `src/modules/order/`, `src/tests/order/`,
 `test/order.e2e-spec.ts`, the `orders` migrations of both engines and

@@ -6,7 +6,7 @@ import {
   IsEmail,
   ValidateNested,
 } from 'class-validator';
-import { ORDER_PROPERTY_SWAGGER } from '@modules/order/order.swagger';
+import { ORDER_PROPERTY_SWAGGER } from '@modules/order/infrastructure/order.swagger';
 import { OrderItemDto } from './orderItem.dto';
 
 export class CreateOrderDto {

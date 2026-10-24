@@ -27,15 +27,15 @@ same engine:
    }),
    ```
 
-2. **Every `<module>.module.ts` with persistence — the entity and the
-   repository.** Same pattern: both engines' imports, `forFeature` lines
-   and provider bindings, one set commented out:
+2. **Every `<module>.module.ts` with persistence — the composition root.**
+   Same pattern: both engines' entity and adapter imports, `forFeature`
+   lines and port bindings, one set commented out:
 
    ```ts
-   import { PostgresOrderEntity } from './entities/postgresOrder.entity';
-   import { PostgresOrderRepository } from './repositories/postgresOrder.repository';
-   // import { MongoOrderEntity } from './entities/mongoOrder.entity';
-   // import { MongoOrderRepository } from './repositories/mongoOrder.repository';
+   import { PostgresOrderEntity } from './infrastructure/adapters/postgres/postgresOrder.entity';
+   import { PostgresOrderAdapter } from './infrastructure/adapters/postgres/postgresOrder.adapter';
+   // import { MongoOrderEntity } from './infrastructure/adapters/mongo/mongoOrder.entity';
+   // import { MongoOrderAdapter } from './infrastructure/adapters/mongo/mongoOrder.adapter';
    …
    imports: [
      TypeOrmModule.forFeature([PostgresOrderEntity]),
@@ -43,10 +43,13 @@ same engine:
    ],
    providers: [
      OrderService,
-     { provide: ORDER_REPOSITORY, useClass: PostgresOrderRepository },
-     // { provide: ORDER_REPOSITORY, useClass: MongoOrderRepository },
+     { provide: ORDER_REPOSITORY, useClass: PostgresOrderAdapter },
+     // { provide: ORDER_REPOSITORY, useClass: MongoOrderAdapter },
    ],
    ```
+
+   This is exactly what a port buys: swapping the engine touches the
+   composition root and nothing else — not the service, not the domain.
 
 **Switching engine means flipping every switch point** — `app.module.ts`
 and each persistence module. A half-switched app boots against one
@@ -60,29 +63,37 @@ These commented lines are the one place code is commented out on purpose
 ## How a module stores its data
 
 ```
-<module>.interface.ts                   I<Module>Repository: the contract
-<module>.constant.ts                    <MODULE>_REPOSITORY: its DI token
-entities/postgres<Module>.entity.ts     the Postgres row
-entities/mongo<Module>.entity.ts        the Mongo document
-repositories/postgres<Module>.repository.ts
-repositories/mongo<Module>.repository.ts
-migrations/postgres/<ts>-<Name>.ts      the table
-migrations/mongo/<ts>-<Name>.ts         the collection's indexes
+application/<name>Repository.port.ts                I<Name>Repository + <NAME>_REPOSITORY token
+infrastructure/adapters/postgres/postgres<Module>.adapter.ts implements the port for Postgres
+infrastructure/adapters/postgres/postgres<Module>.entity.ts  the Postgres row
+infrastructure/adapters/postgres/postgres<Module>.mapper.ts  row <-> aggregate
+infrastructure/adapters/mongo/mongo<Module>.adapter.ts       implements the port for MongoDB
+infrastructure/adapters/mongo/mongo<Module>.entity.ts        the Mongo document
+infrastructure/adapters/mongo/mongo<Module>.mapper.ts        document <-> aggregate
+migrations/postgres/<ts>-<Name>.ts                  the table
+migrations/mongo/<ts>-<Name>.ts                     the collection's indexes
 ```
 
-- **The contract is an interface; the token is a `Symbol`.** An interface
-  doesn't exist at runtime, so Nest needs a token to inject it by: the
-  service takes `@Inject(ORDER_REPOSITORY) orderRepository:
-  IOrderRepository` (imported with `import type`), each repository
-  `implements IOrderRepository`, and the module binds
+- **The port is an interface; its token is a `Symbol`**, both exported
+  from the port file. The service takes `@Inject(ORDER_REPOSITORY)
+  orderRepository: IOrderRepository` (imported with `import type`), each
+  adapter `implements IOrderRepository`, and the module binds
   `{ provide: ORDER_REPOSITORY, useClass: … }`.
-- **A repository speaks the module's interface, never its entity.** It
-  converts in two private methods (`toEntity`/`toDocument` and
-  `toOrder`-style), so no entity crosses into the service.
+- **The port speaks the aggregate.** It takes and returns domain objects
+  (`Order`); the adapter never lets a TypeORM entity cross into the
+  application layer.
+- **The mapper is the only place that converts**: `toDomain(entity)`
+  rebuilds the aggregate with `reconstitute` (and its value objects with
+  `create`, so stored data is re-validated); `toPersistence(order)` reads
+  it back through its getters. The adapter delegates every conversion to
+  it.
+- **`save` is an upsert.** The adapter doesn't know whether the aggregate
+  is new: Postgres `save()` merges by primary key; Mongo uses
+  `updateOne({ id }, { $set }, { upsert: true })`.
 - **Every engine implements every file**, including the one commented out
   — it still compiles, lints and is reviewed. `npm run check:standards`
-  fails when `entities/` or `repositories/` has a file with no sibling for
-  each engine.
+  fails when a file in `infrastructure/adapters/<engine>/` has no sibling
+  in each other engine's folder.
 
 ## Engine specifics
 
@@ -94,7 +105,7 @@ migrations/mongo/<ts>-<Name>.ts         the collection's indexes
 | Nested data | `jsonb` column | embedded array |
 | Schema | `synchronize: false` + SQL migrations in `migrations/postgres/` | `synchronize: false` + index migrations in `migrations/mongo/` |
 | CLI data source | `config/postgres.datasource.ts` | `config/mongo.datasource.ts` |
-| Writes | `save()` | `insertOne()` / `updateOne({ id }, { $set })` — never `save()` on a document without its `_id` |
+| Writes | `save()` | `updateOne({ id }, { $set }, { upsert: true })` — never `save()` on a document without its `_id` |
 
 - `ObjectId` is imported as a type from `mongodb`, not from `typeorm`.
 - **Both engines own their schema through migrations**, never
@@ -125,7 +136,7 @@ migrations/mongo/<ts>-<Name>.ts         the collection's indexes
    `config/<engine>.config.ts` and `config/<engine>.datasource.ts`, plus
    its `migration:<engine>:*` scripts.
 2. Add a commented `useFactory` alternative in `app.module.ts`.
-3. Write the entity, repository and migrations for every persistence
+3. Write the entity, mapper, adapter and migrations for every persistence
    module, and add their commented lines to each module file.
 4. Add the engine to `DATABASE_ENGINES` in `scripts/check-standards.mjs`
    and its service to `docker-compose.yml`.

@@ -1,7 +1,7 @@
 import { Column, Entity, ObjectIdColumn } from 'typeorm';
 import type { ObjectId } from 'mongodb';
-import { ORDER_STATUSES } from '@modules/order/order.constant';
-import type { IOrderItem } from '@modules/order/order.interface';
+import { ORDER_STATUSES } from '@modules/order/domain/order.constant';
+import type { IOrderItemPrimitives } from '@modules/order/domain/order.interface';
 
 @Entity('orders')
 export class MongoOrderEntity {
@@ -15,7 +15,7 @@ export class MongoOrderEntity {
   customerEmail: string;
 
   @Column()
-  items: IOrderItem[];
+  items: IOrderItemPrimitives[];
 
   @Column()
   total: number;

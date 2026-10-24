@@ -7,8 +7,8 @@ import {
   Max,
   Min,
 } from 'class-validator';
-import { ORDER_ITEM_MAX_QUANTITY } from '@modules/order/order.constant';
-import { ORDER_PROPERTY_SWAGGER } from '@modules/order/order.swagger';
+import { ORDER_ITEM_MAX_QUANTITY } from '@modules/order/domain/order.constant';
+import { ORDER_PROPERTY_SWAGGER } from '@modules/order/infrastructure/order.swagger';
 
 export class OrderItemDto {
   @ApiProperty(ORDER_PROPERTY_SWAGGER.SKU)

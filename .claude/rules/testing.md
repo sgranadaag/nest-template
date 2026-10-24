@@ -1,33 +1,44 @@
-# Testing — modular (`main`)
+# Testing — hexagonal (`stable/hexagonal`)
 
 Jest + ts-jest. Two suites, each with its own scope.
 
 ## Unit — `npm test`
 
-- **What gets one**: every `<module>.service.ts` (the business logic) and
-  every `utils/*.util.ts` — one test file per util file, a `describe` per
-  function. `npm run check:standards` fails when one is
-  missing.
-- **What doesn't**: controllers, DTOs, swagger schemas, repositories,
-  entities, configs, decorators and middlewares. They are wiring over the framework and the driver, and are
-  exercised by the e2e suite instead.
-- **Where**: `src/tests/<module>/<name>.service.test.ts` and
-  `src/tests/utils/<name>.util.test.ts`, importing through `@modules/*` /
-  `@utils/*`. The test is named for the file it tests plus `.test.ts`;
-  Jest matches `.test.ts`, not `.spec.ts`.
-- **Shape**: one file per service, one nested `describe` per method, one
-  `it` per behaviour — including each exception path.
-- **Mocking the repository**: build the service by hand with a plain object
-  of named `jest.fn()`s typed as the module's `I<Module>Repository`. No
-  `Test.createTestingModule`, no database, no TypeORM.
+- **What gets one**: the business logic, which in this architecture is
+  exactly the inner two layers, plus utils:
+  - every `domain/` aggregate (`<module>.entity.ts`) and value object
+    (`*.valueObject.ts`);
+  - every `application/` service;
+  - every `utils/*.util.ts` — one test file per util file, a `describe` per
+    function.
+
+  `npm run check:standards` fails when one is missing.
+- **What doesn't**: everything in `infrastructure/` (controllers, DTOs,
+  swagger schemas, adapters, mappers, TypeORM entities), configs,
+  decorators and middlewares. They are glue over the framework and the
+  driver, and are exercised by the e2e suite instead.
+- **Where**: `src/tests/<module>/<source file name>.test.ts` — flat per
+  module, whatever layer the source is in (`order.entity.test.ts`,
+  `orderItem.valueObject.test.ts`, `order.service.test.ts`) — and
+  `src/tests/utils/<name>.util.test.ts`. Jest matches `.test.ts`, not
+  `.spec.ts`.
+- **Domain tests** construct the aggregate and value objects directly — no
+  mocks at all. They cover each factory, each invariant (including the
+  refusal paths) and each derived value.
+- **Service tests**: one file per service, one nested `describe` per method,
+  one `it` per behaviour including each exception path. Build the service
+  by hand with the port mocked as a plain object of named `jest.fn()`s,
+  typed as the port interface. No `Test.createTestingModule`, no database.
 
   ```ts
   findMock = jest.fn().mockResolvedValue(null);
-  const orderRepository: IOrderRepository = { create: createMock, find: findMock, … };
+  const orderRepository: IOrderRepository = { save: saveMock, find: findMock, … };
   service = new OrderService(orderRepository);
   ```
-- A util that encodes a rule over a range of inputs gets a table-driven
-  test (`it.each`).
+- Build test aggregates with `reconstitute` when the test needs a known id
+  or state.
+- A rule over a range of inputs gets a table-driven test (`it.each`) —
+  e.g. `OrderItem.isValid`.
 
 ## e2e — `npm run test:e2e`
 
@@ -58,5 +69,5 @@ Call the npm scripts, not `npx jest`.
 npm run typecheck && npm run lint && npm run check:standards && npm test && npm run build
 ```
 
-plus `npm run test:e2e` on each engine when a controller, a DTO, a
-repository or an entity changed (`docker compose up -d` first).
+plus `npm run test:e2e` on each engine when anything in `infrastructure/`
+changed (`docker compose up -d` first).

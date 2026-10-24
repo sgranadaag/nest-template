@@ -4,5 +4,3 @@ export enum ORDER_STATUSES {
 }
 
 export const ORDER_ITEM_MAX_QUANTITY = 1000;
-
-export const ORDER_REPOSITORY = Symbol('OrderRepository');

@@ -1,6 +1,6 @@
 import { Column, Entity, PrimaryColumn } from 'typeorm';
-import { ORDER_STATUSES } from '@modules/order/order.constant';
-import type { IOrderItem } from '@modules/order/order.interface';
+import { ORDER_STATUSES } from '@modules/order/domain/order.constant';
+import type { IOrderItemPrimitives } from '@modules/order/domain/order.interface';
 
 @Entity('orders')
 export class PostgresOrderEntity {
@@ -11,7 +11,7 @@ export class PostgresOrderEntity {
   customerEmail: string;
 
   @Column('jsonb')
-  items: IOrderItem[];
+  items: IOrderItemPrimitives[];
 
   @Column('double precision')
   total: number;
